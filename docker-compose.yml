@@ -56,7 +56,7 @@ services:
     volumes:
       - ./data/database:/app/data/database
       - ./data/torrents:/app/data/torrents
-      - /mnt/media/data/stremhu:/app/data/downloads
+      - ./data/downloads:/app/data/downloads
     labels:
       - homepage.group=Streaming
       - homepage.name=StremHU
