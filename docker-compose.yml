@@ -35,8 +35,8 @@ services:
       - MONITOR_RETRIES=3
       - PORT_SCRIPT=/pia-helper.sh
     ports:
-      - 3003:3000 # StremHU UI
-      - 3004:5000 # speedtest
+      - 3000:3000 # StremHU UI
+      - 5000:5000 # speedtest
     healthcheck:
       test:
         - CMD-SHELL
