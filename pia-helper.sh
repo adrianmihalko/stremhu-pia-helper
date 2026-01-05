@@ -4,7 +4,13 @@ set -euo pipefail
 BASE_URL=""
 token_env=""
 base_env=""
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 ENV_PATH=".env"
+if [[ ! -f "$ENV_PATH" && -f "${SCRIPT_DIR}/.env" ]]; then
+  ENV_PATH="${SCRIPT_DIR}/.env"
+fi
 if [[ ! -f "$ENV_PATH" && -f "/.env" ]]; then
   ENV_PATH="/.env"
 fi
@@ -87,6 +93,19 @@ run_setup() {
     done
   }
 
+  prompt_optional() {
+    local prompt_text="$1"
+    local default_value="${2-}"
+    local value
+    if [[ -n "$default_value" ]]; then
+      read -r -p "$prompt_text [$default_value]: " value
+      [[ -z "$value" ]] && value="$default_value"
+    else
+      read -r -p "$prompt_text (leave blank to skip for now): " value
+    fi
+    printf '%s\n' "$value"
+  }
+
   ask_keep() {
     local prompt_text="$1"
     local reply
@@ -166,12 +185,20 @@ run_setup() {
 
   detect_local_database_path() {
     local compose_file=""
-    for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
-      if [[ -f "$candidate" ]]; then
-        compose_file="$candidate"
-        break
-      fi
+    local search_dirs=("$PWD")
+    if [[ "${SCRIPT_DIR}" != "$PWD" ]]; then
+      search_dirs+=("${SCRIPT_DIR}")
+    fi
+
+    for dir in "${search_dirs[@]}"; do
+      for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+        if [[ -f "${dir}/${candidate}" ]]; then
+          compose_file="${dir}/${candidate}"
+          break 2
+        fi
+      done
     done
+
     [[ -z "$compose_file" ]] && return
 
     local host_path
@@ -312,40 +339,44 @@ run_setup() {
       echo "- sqlite3 not available or $db_file not readable; cannot extract BASE_URL/TOKEN."
     fi
   else
-    echo "- Compose file not found; cannot auto-detect database path."
+    echo "- Compose file not found in $PWD or ${SCRIPT_DIR}; cannot auto-detect database path."
   fi
 
   if [[ -z "${BASE_URL-}" ]]; then
     if [[ -n "${base_env-}" ]]; then
-      BASE_URL="$base_env"
-    elif [[ -n "$extracted_base" ]]; then
-      local use_base
+      if ask_keep "BASE_URL already set to '$base_env'. Keep existing?"; then
+        BASE_URL="$base_env"
+      fi
+    fi
+    if [[ -z "$BASE_URL" && -n "$extracted_base" ]]; then
       if ask_keep "Use extracted BASE_URL ($extracted_base)?"; then
         BASE_URL="$extracted_base"
-      else
-        BASE_URL="$(prompt_required "Enter BASE_URL")"
       fi
-    else
-      BASE_URL="$(prompt_required "Enter BASE_URL")"
+    fi
+    if [[ -z "$BASE_URL" ]]; then
+      BASE_URL="$(prompt_optional "Enter BASE_URL")"
+      if [[ -z "$BASE_URL" ]]; then
+        echo "- BASE_URL not provided; you can rerun setup after StremHU is configured to populate it."
+      fi
     fi
   fi
 
   if [[ -z "${token-}" ]]; then
-    if [[ -n "$extracted_token" ]]; then
-      local use_extracted
+    if [[ -n "$existing_token" ]]; then
+      if ask_keep "TOKEN already set to '$existing_token'. Keep existing?"; then
+        token="$existing_token"
+      fi
+    fi
+    if [[ -z "$token" && -n "$extracted_token" ]]; then
       if ask_keep "Use extracted TOKEN ($extracted_token)?"; then
         token="$extracted_token"
-      else
-        token="$(prompt_required "Enter TOKEN" "$existing_token")"
       fi
-    else
-      token="$(prompt_required "Enter TOKEN" "$existing_token")"
     fi
-  fi
-
-  if [[ -n "$existing_token" && -z "${token-}" ]]; then
-    if ask_keep "TOKEN already set to '$existing_token'. Keep existing?"; then
-      token="$existing_token"
+    if [[ -z "$token" ]]; then
+      token="$(prompt_optional "Enter TOKEN" "$existing_token")"
+      if [[ -z "$token" ]]; then
+        echo "- TOKEN not provided; rerun setup after StremHU admin user exists to fill it."
+      fi
     fi
   fi
 
