@@ -7,6 +7,9 @@ Két részből áll:
   - PIA VPN konténer
   - StremHU Source konténer
   - Speedtest konténer (VPN sebességteszt + nyitott Port Check teszt)
+- és egy  `pia-helper.sh` szkriptből
+  - interaktív `.env` beállítás (PIA bejelentkezési adatok, port forwardinghoz TOKEN/BASE_URL)
+  - automatikus torrent port frissítés a port változásakor a StremHU-ban
 
 A StremHU Source projekt itt érhető el: https://github.com/s4pp1/stremhu-source
 
