@@ -1,0 +1,79 @@
+services:
+  vpn-pia:
+    image: thrnz/docker-wireguard-pia
+    container_name: vpn-pia
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.default.disable_ipv6=1
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.lo.disable_ipv6=1
+    volumes:
+      - ./config/vpn-pia:/pia
+      - ./config/vpn-pia:/pia-shared
+      - ./.env:/.env:ro
+      - ./pia-helper.sh:/pia-helper.sh
+    environment:
+      - TZ=Europe/Budapest
+      - LOC=hungary
+      - USER=${PIA_USER}
+      - PASS=${PIA_PASS}
+      - LOCAL_NETWORK=172.22.0.0/16,100.64.0.0/10,10.88.1.0/24
+      - KEEPALIVE=25
+      - VPNDNS=1.1.1.1,1.0.0.1
+      - PORT_FORWARDING=1
+      - PORT_FILE=/pia-shared/port.dat
+      - PORT_FILE_CLEANUP=0
+      - PORT_PERSIST=1
+      - FIREWALL=1
+      - ACTIVE_HEALTHCHECKS=1
+      - HEALTHCHECK_PING_TARGET=www.google.com,1.1.1.1
+      - HEALTHCHECK_PING_TIMEOUT=5
+      - RECONNECT=1
+      - MONITOR_INTERVAL=60
+      - MONITOR_RETRIES=3
+      - PORT_SCRIPT=/pia-helper.sh
+    ports:
+      - 3003:3000 # StremHU UI
+      - 3004:5000 # speedtest
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS --max-time 5 https://api.ipify.org >/dev/null || exit 1
+      interval: 15s
+      timeout: 7s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+  stremhu-source:
+    image: s4pp1/stremhu-source:dev
+    container_name: stremhu-source
+    depends_on:
+      vpn-pia:
+        condition: service_healthy
+    network_mode: service:vpn-pia
+    volumes:
+      - ./data/database:/app/data/database
+      - ./data/torrents:/app/data/torrents
+      - /mnt/media/data/stremhu:/app/data/downloads
+    labels:
+      - homepage.group=Streaming
+      - homepage.name=StremHU
+      - homepage.icon=mdi-television-box
+      - homepage.href=https://stremhu.adrianmihalko.eu
+      - homepage.description=Hungarian Stremio source
+    restart: unless-stopped
+  speedtest-app:
+    image: adriankoooo/speedtest-app:latest
+    container_name: speedtest-app
+    depends_on:
+      vpn-pia:
+        condition: service_healthy
+    network_mode: service:vpn-pia
+    environment:
+      - TZ=Europe/Budapest
+    volumes:
+      - ./config/vpn-pia/port.dat:/port.dat:ro
+    restart: unless-stopped
+networks: {}
