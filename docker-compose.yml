@@ -57,12 +57,6 @@ services:
       - ./data/database:/app/data/database
       - ./data/torrents:/app/data/torrents
       - ./data/downloads:/app/data/downloads
-    labels:
-      - homepage.group=Streaming
-      - homepage.name=StremHU
-      - homepage.icon=mdi-television-box
-      - homepage.href=https://stremhu.adrianmihalko.eu
-      - homepage.description=Hungarian Stremio source
     restart: unless-stopped
   speedtest-app:
     image: adriankoooo/speedtest-app:latest
