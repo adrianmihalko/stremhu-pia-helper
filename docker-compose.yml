@@ -47,7 +47,7 @@ services:
       start_period: 30s
     restart: unless-stopped
   stremhu-source:
-    image: s4pp1/stremhu-source:dev
+    image: s4pp1/stremhu-source:latest
     container_name: stremhu-source
     depends_on:
       vpn-pia:
