@@ -20,6 +20,29 @@ if [[ -z "$base_env" && -n "${BASE_URL-}" ]]; then
   base_env="$BASE_URL"
 fi
 
+TOOL_NAME="StremHU PIA Helper by madrian"
+TOOL_VERSION="0.1"
+UPDATE_URL="https://raw.githubusercontent.com/adrianmihalko/stremhu-pia-helper/refs/heads/main/pia-helper.sh"
+
+maybe_update() {
+  local tmp_file
+  tmp_file="$(mktemp)"
+  echo "Frissítés... letöltés: ${UPDATE_URL}"
+  if curl --fail --silent --show-error --location "${UPDATE_URL}" -o "$tmp_file"; then
+    if mv "$tmp_file" "$(readlink -f "$0")"; then
+      chmod +x "$(readlink -f "$0")" || true
+      echo "Sikeres frissítés. Indítsd újra a scriptet."
+      exit 0
+    else
+      echo "Frissítés sikertelen (nem tudtam felülírni a scriptet)." >&2
+      exit 1
+    fi
+  else
+    echo "Frissítés sikertelen (curl hiba)." >&2
+    exit 1
+  fi
+}
+
 run_setup() {
   local ENV_FILE="$ENV_PATH"
   local TIMESTAMP
@@ -30,8 +53,6 @@ run_setup() {
     echo "== $1 =="
   }
 
-  local TOOL_NAME="StremHU PIA Helper by madrian"
-  local TOOL_VERSION="0.1"
   echo "${TOOL_NAME} v${TOOL_VERSION}"
 
   if [[ -f "$ENV_FILE" ]]; then
@@ -270,6 +291,10 @@ run_setup() {
     echo "- Local database path from compose: $local_db_path"
     local db_file="$local_db_path/app.db"
     local db_uri="file:$db_file?mode=ro&immutable=1"
+    if [[ ! -f "$db_file" ]]; then
+      echo "- Database ($db_file) not found. Likely first run and StremHU is not set up yet. Start the stack (docker compose up), complete StremHU setup, then rerun this setup to fill TOKEN/BASE_URL. Don't forget to restart docker after filling TOKEN/BASE_URL."
+      exit 1
+    fi
     if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$db_file" ]]; then
       extracted_base="$(sqlite3 -readonly -noheader "$db_uri" "SELECT address FROM settings WHERE id='global';" 2>/dev/null | head -n1 || true)"
       if [[ -n "$extracted_base" ]]; then
@@ -382,10 +407,15 @@ if [[ "${1-}" == "setup" ]]; then
   exit 0
 fi
 
+if [[ "${1-}" == "update" ]]; then
+  maybe_update
+fi
+
 if [[ $# -lt 1 || -z "${1-}" ]]; then
-  echo "Usage: $0 <port> | $0 setup" >&2
-  echo "  <port>  Update PIA forwarding port via API"
-  echo "  setup   Run interactive .env setup (PIA_USER, PIA_PASS, LOCAL_NETWORK, TOKEN, BASE_URL)"
+  echo "Usage: $0 <port> | $0 setup | $0 update" >&2
+  echo "  <port>   Update PIA forwarding port via API"
+  echo "  setup    Run interactive .env setup (PIA_USER, PIA_PASS, LOCAL_NETWORK, TOKEN, BASE_URL)"
+  echo "  update   Download latest pia-helper.sh and exit"
   exit 1
 fi
 
