@@ -54,12 +54,36 @@ run_setup() {
   local TIMESTAMP
   TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 
+  ensure_rw_target() {
+    local target="$1"
+    local label="$2"
+    if [[ -e "$target" ]]; then
+      if [[ ! -r "$target" ]]; then
+        echo "Error: $label ($target) is not readable; adjust permissions and retry." >&2
+        exit 1
+      fi
+      if [[ ! -w "$target" ]]; then
+        echo "Error: $label ($target) is not writable; adjust permissions and retry." >&2
+        exit 1
+      fi
+    else
+      local parent
+      parent="$(dirname "$target")"
+      if [[ ! -w "$parent" ]]; then
+        echo "Error: Parent directory for $label ($parent) is not writable; adjust permissions and retry." >&2
+        exit 1
+      fi
+    fi
+  }
+
   print_section() {
     echo
     echo "== $1 =="
   }
 
   echo "${TOOL_NAME} v${TOOL_VERSION}"
+
+  ensure_rw_target "$ENV_FILE" ".env file"
 
   if [[ -f "$ENV_FILE" ]]; then
     cp "$ENV_FILE" "${ENV_FILE}.bak-${TIMESTAMP}"
@@ -73,7 +97,7 @@ run_setup() {
   existing_token="$(grep -E '^TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
 
   local use_existing_local_network=false
-  local pia_user pia_pass token
+  local pia_user="" pia_pass="" token=""
 
   print_section "PIA Credentials"
 
@@ -194,6 +218,10 @@ run_setup() {
       for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
         if [[ -f "${dir}/${candidate}" ]]; then
           compose_file="${dir}/${candidate}"
+          if [[ ! -r "$compose_file" ]]; then
+            echo "- Found compose file but it is not readable: $compose_file"
+            return
+          fi
           break 2
         fi
       done
@@ -320,6 +348,10 @@ run_setup() {
     local db_uri="file:$db_file?mode=ro&immutable=1"
     if [[ ! -f "$db_file" ]]; then
       echo "- Database ($db_file) not found. Likely first run and StremHU is not set up yet. Start the stack (docker compose up), complete StremHU setup, then rerun this setup to fill TOKEN/BASE_URL. Don't forget to restart docker after filling TOKEN/BASE_URL."
+      exit 1
+    fi
+    if [[ ! -r "$db_file" ]]; then
+      echo "- Database ($db_file) exists but is not readable. Fix permissions and rerun setup."
       exit 1
     fi
     if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$db_file" ]]; then
