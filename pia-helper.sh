@@ -27,7 +27,7 @@ if [[ -z "$base_env" && -n "${BASE_URL-}" ]]; then
 fi
 
 TOOL_NAME="StremHU PIA Helper by madrian"
-TOOL_VERSION="0.1"
+TOOL_VERSION="0.2"
 UPDATE_URL="https://raw.githubusercontent.com/adrianmihalko/stremhu-pia-helper/refs/heads/main/pia-helper.sh"
 
 maybe_update() {
