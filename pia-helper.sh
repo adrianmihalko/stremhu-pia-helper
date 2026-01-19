@@ -497,7 +497,7 @@ BASE_URL="$base_env"
 
 PORT="${1}"
 
-SETTINGS_URL="${BASE_URL}/api/${TOKEN}/settings"
+SETTINGS_URL="${BASE_URL}/api/${TOKEN}/external/relay/settings"
 
 echo "PIA-VPN Port update: notifying ${BASE_URL} with port ${PORT}"
 
