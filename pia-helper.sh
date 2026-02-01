@@ -500,21 +500,27 @@ SETTINGS_URL="${BASE_URL}/api/${TOKEN}/external/relay/settings"
 
 echo "PIA-VPN Port update: notifying ${BASE_URL} with port ${PORT}"
 
-if ! curl \
-  --fail \
-  --silent \
-  --show-error \
-  --max-time 60 \
-  --retry 5 \
-  --retry-delay 30 \
-  -X PUT \
-  -H "Content-Type: application/json" \
-  -d "{\"port\": ${PORT}}" \
-  "${SETTINGS_URL}"
-then
+attempt=0
+while true; do
+  attempt=$((attempt + 1))
+  echo "Attempt ${attempt}: PUT ${SETTINGS_URL}"
+
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --max-time 60 \
+    -X PUT \
+    -H "Content-Type: application/json" \
+    -d "{\"port\": ${PORT}}" \
+    "${SETTINGS_URL}"
   status=$?
-  echo "PIA-VPN Port update failed (curl exit ${status}) hitting ${SETTINGS_URL}. If the container just started, this can be normal while PIA settles." >&2
-  exit 1
-else
-  echo "PIA-VPN Port update success (curl, pia-helper.sh)"
-fi
+
+  if [[ $status -eq 0 ]]; then
+    echo "PIA-VPN Port update success (curl, pia-helper.sh)"
+    break
+  fi
+
+  echo "PIA-VPN Port update failed (curl exit ${status}) hitting ${SETTINGS_URL}. Retrying in 30s..." >&2
+  sleep 30
+done
