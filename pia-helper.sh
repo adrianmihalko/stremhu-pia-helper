@@ -231,7 +231,7 @@ run_setup() {
 
     local host_path
     host_path="$(awk '
-      match($0, /^[[:space:]]*-[[:space:]]*([^:]+):\/app\/data\/database/, m) { print m[1]; exit }
+      match($0, /^[[:space:]]*-[[:space:]]*([^:]+):\/app\/data\/system/, m) { print m[1]; exit }
     ' "$compose_file")"
     [[ -z "$host_path" ]] && return
 
