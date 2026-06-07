@@ -344,7 +344,7 @@ run_setup() {
   local_db_path="$(detect_local_database_path || true)"
   if [[ -n "$local_db_path" ]]; then
     echo "- Local database path from compose: $local_db_path"
-    local db_file="$local_db_path/app.db"
+    local db_file="$local_db_path/database/app.db"
     local db_uri="file:$db_file?mode=ro&immutable=1"
     if [[ ! -f "$db_file" ]]; then
       echo "- Database ($db_file) not found. Likely first run and StremHU is not set up yet. Start the stack (docker compose up), complete StremHU setup, then rerun this setup to fill TOKEN/BASE_URL. Don't forget to restart docker after filling TOKEN/BASE_URL."
