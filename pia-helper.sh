@@ -187,7 +187,43 @@ resolve_db_location() {
   printf '%s|%s|%s\n' "$mode" "$source" "$subpath"
 }
 
-# Copy the StremHU database to a temporary file and print its path.
+# Resolve the real Docker volume name from the compose top-level volumes block.
+# Falls back to <project>_<key> (Compose's default naming) if no explicit name is set.
+resolve_volume_name() {
+  local compose_file="$1" key="$2"
+  [[ -z "$compose_file" || -z "$key" ]] && return 1
+  local name
+  name="$(awk -v k="$key" '
+    /^volumes:[[:space:]]*$/ { in_v=1; next }
+    in_v && /^[^[:space:]#]/ { in_v=0 }
+    in_v && /^[ \t]+[A-Za-z0-9_.-]+:[[:space:]]*$/ {
+      s=$0; sub(/:[[:space:]]*$/,"",s); sub(/^[ \t]+/,"",s); cur=s; next
+    }
+    in_v && cur==k && /^[ \t]+name:[[:space:]]*/ {
+      l=$0; sub(/.*name:[[:space:]]*/,"",l); gsub(/["'"'"']/,"",l); sub(/[[:space:]]*#.*/,"",l); print l; exit
+    }
+  ' "$compose_file")"
+  if [[ -n "$name" ]]; then
+    printf '%s\n' "$name"
+    return 0
+  fi
+  local project
+  project="$(basename "$(cd "$(dirname "$compose_file")" && pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g; s/^[-_]*//; s/[-_]*$//')"
+  [[ -z "$project" ]] && return 1
+  printf '%s\n' "${project}_${key}"
+}
+
+# Ensure the temporary DB copy is owned/writable by the current user, so that
+# sqlite3 can replay the WAL when creating a snapshot.
+fix_copy_owner() {
+  local dir="$1"
+  [[ -w "$dir/app.db" ]] && return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  docker run --rm -v "${dir}:/out" alpine:3 chown -R "$(id -u):$(id -g)" /out >/dev/null 2>&1 || true
+}
+
+# Copy the StremHU database (including -wal/-shm) into a temporary directory and
+# print that directory. The caller creates a consistent snapshot from it.
 copy_database() {
   local compose_file="$1" service="$2" mode="$3" source="$4" subpath="$5"
   local compose_dir tmp
@@ -203,36 +239,51 @@ copy_database() {
       base="$(realpath "$source" 2>/dev/null || printf '%s' "$source")"
     fi
     [[ -z "$base" ]] && return 1
-    local dbfile="$base/$subpath"
-    if [[ -f "$dbfile" ]]; then
-      printf '%s\n' "$dbfile"
-      return 0
+    local src_dir
+    src_dir="$base/$(dirname "$subpath")"
+    [[ -f "$src_dir/app.db" ]] || return 1
+    local dbdir="$tmp/database"
+    mkdir -p "$dbdir"
+    if ! cp -a "$src_dir/." "$dbdir/" 2>/dev/null; then
+      cp "$src_dir/app.db" "$dbdir/" 2>/dev/null || return 1
     fi
-    return 1
+    printf '%s\n' "$dbdir"
+    return 0
   fi
 
-  if ! command -v docker >/dev/null 2>&1; then
-    return 1
-  fi
+  command -v docker >/dev/null 2>&1 || return 1
 
   local container_id=""
   container_id="$(docker compose -f "$compose_file" ps -q "$service" 2>/dev/null | head -n1 || true)"
   if [[ -z "$container_id" ]]; then
     container_id="$(docker ps -aq -f "name=^/${service}$" 2>/dev/null | head -n1 || true)"
   fi
+
+  local dbdir="$tmp/database"
+  mkdir -p "$dbdir"
+
   if [[ -n "$container_id" ]]; then
-    if docker cp "${container_id}:/app/data/system/database/app.db" "$tmp/app.db" >/dev/null 2>&1; then
-      printf '%s\n' "$tmp/app.db"
+    if docker cp "${container_id}:/app/data/system/database/." "$dbdir/" >/dev/null 2>&1 && [[ -f "$dbdir/app.db" ]]; then
+      fix_copy_owner "$dbdir"
+      printf '%s\n' "$dbdir"
       return 0
     fi
   fi
 
-  local image="alpine:3"
-  if docker run --rm --entrypoint cp -v "${source}:/src" -v "${tmp}:/out" "$image" "/src/$subpath" "/out/app.db" >/dev/null 2>&1; then
-    if [[ -f "$tmp/app.db" ]]; then
-      printf '%s\n' "$tmp/app.db"
-      return 0
-    fi
+  local volume_name
+  volume_name="$(resolve_volume_name "$compose_file" "$source" || true)"
+  [[ -z "$volume_name" ]] && return 1
+  if ! docker volume inspect "$volume_name" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local rel_dir
+  rel_dir="$(dirname "$subpath")"
+  if docker run --rm --entrypoint sh -v "${volume_name}:/src:ro" -v "${dbdir}:/out" alpine:3 \
+      -c "cp -a /src/${rel_dir}/. /out/ 2>/dev/null" >/dev/null 2>&1 && [[ -f "$dbdir/app.db" ]]; then
+    fix_copy_owner "$dbdir"
+    printf '%s\n' "$dbdir"
+    return 0
   fi
   return 1
 }
@@ -307,6 +358,50 @@ run_setup() {
     cp "$ENV_FILE" "${ENV_FILE}.bak-${TIMESTAMP}"
     chmod 600 "${ENV_FILE}.bak-${TIMESTAMP}" 2>/dev/null || true
     echo "Backed up existing .env to ${ENV_FILE}.bak-${TIMESTAMP}"
+  fi
+
+  # -- StremHU readiness (first checks, must pass before anything else) -----
+  print_section "StremHU Source"
+  if ! ask_keep "Was StremHU Source already set up and configured (admin user + network)?"; then
+    echo
+    echo "Setup a VPN helper requires a working, configured StremHU Source installation."
+    echo "Please do the following first:"
+    echo "  1) docker compose up -d"
+    echo "  2) Finish the StremHU web setup (admin user, network, torrent port)"
+    echo "  3) docker compose down"
+    echo "  4) Run './pia-helper.sh setup' again"
+    exit 1
+  fi
+
+  stacks_running() {
+    command -v docker >/dev/null 2>&1 || return 1
+    local svc_hint="stremhu-source"
+    if [[ -n "$compose_file" ]]; then
+      svc_hint="$(detect_compose_service "$compose_file" || true)"
+      [[ -z "$svc_hint" ]] && svc_hint="stremhu-source"
+    fi
+    local running_names
+    running_names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
+    grep -qx "$svc_hint" <<< "$running_names" \
+      || grep -qx "vpn-pia" <<< "$running_names" \
+      || grep -qx "speedtest-app" <<< "$running_names"
+  }
+
+  if stacks_running; then
+    echo
+    echo "The StremHU stack is currently running. Stop it before continuing, because"
+    echo "the container network mode and published ports will change:"
+    if [[ -n "$compose_file" ]]; then
+      echo "  docker compose -f \"$compose_file\" down"
+    else
+      echo "  docker compose down"
+    fi
+    read -r -p "Press Enter once the containers are stopped... " _
+    if stacks_running; then
+      echo
+      echo "Error: the StremHU stack is still running. Stop it and run './pia-helper.sh setup' again." >&2
+      exit 1
+    fi
   fi
 
   local existing_user="" existing_pass="" existing_local_network="" existing_token=""
@@ -440,53 +535,6 @@ run_setup() {
     local_network_value="$(IFS=','; echo "${local_network_subnets[*]}")"
   fi
 
-  # -- StremHU readiness ----------------------------------------------------
-  print_section "StremHU Source"
-  if ! ask_keep "Was StremHU Source already set up and configured (admin user + network)?"; then
-    echo
-    echo "Setup a VPN helper requires a working, configured StremHU Source installation."
-    echo "Please do the following first:"
-    echo "  1) docker compose up -d"
-    echo "  2) Finish the StremHU web setup (admin user, network, torrent port)"
-    echo "  3) docker compose down"
-    echo "  4) Run './pia-helper.sh setup' again"
-    exit 1
-  fi
-
-  local containers_running=false
-  if command -v docker >/dev/null 2>&1; then
-    local svc_hint="stremhu-source"
-    if [[ -n "$compose_file" ]]; then
-      svc_hint="$(detect_compose_service "$compose_file" || true)"
-      [[ -z "$svc_hint" ]] && svc_hint="stremhu-source"
-    fi
-    local running_names
-    running_names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
-    if grep -qx "$svc_hint" <<< "$running_names" \
-      || grep -qx "vpn-pia" <<< "$running_names" \
-      || grep -qx "speedtest-app" <<< "$running_names"; then
-      containers_running=true
-    fi
-  fi
-  if [[ "$containers_running" == true ]]; then
-    echo
-    echo "The StremHU stack is currently running. Stop it before continuing, because"
-    echo "the container network mode and published ports will change:"
-    if [[ -n "$compose_file" ]]; then
-      echo "  docker compose -f \"$compose_file\" down"
-    else
-      echo "  docker compose down"
-    fi
-    local _stopped_reply
-    while true; do
-      read -r -p "Press Enter once the containers are stopped (or type 'skip' to continue anyway): " _stopped_reply
-      if [[ -z "$_stopped_reply" || "$_stopped_reply" == "skip" ]]; then
-        break
-      fi
-      echo "Press Enter to continue, or type 'skip'."
-    done
-  fi
-
   # -- Compose + database ---------------------------------------------------
   print_section "Database & API"
 
@@ -539,15 +587,23 @@ run_setup() {
   echo "- API port (from compose, default 7070): $api_port_default"
 
   local extracted_token="" extracted_base="" selfsigned="${existing_selfsigned:-false}"
-  local db_copy=""
+  local db_dir=""
   if [[ -n "$db_volume_source" && -n "$db_subpath" ]]; then
-    db_copy="$(copy_database "$compose_file" "$service_name" "$db_volume_mode" "$db_volume_source" "$db_subpath" || true)"
+    db_dir="$(copy_database "$compose_file" "$service_name" "$db_volume_mode" "$db_volume_source" "$db_subpath" || true)"
   fi
 
-  if [[ -n "$db_copy" && -f "$db_copy" ]]; then
-    echo "- Reading database: $db_copy"
+  if [[ -n "$db_dir" && -d "$db_dir" && -f "$db_dir/app.db" ]]; then
+    echo "- Reading database: $db_dir/app.db"
+    if [[ -f "$db_dir/app.db-wal" ]]; then
+      echo "- Found SQLite WAL file; creating a consistent snapshot."
+    fi
     if command -v sqlite3 >/dev/null 2>&1; then
-      local db_uri="file:$db_copy?mode=ro&immutable=1"
+      local db_snapshot="$db_dir/app.db"
+      local clean_db="$db_dir/snapshot.db"
+      if sqlite3 "$db_dir/app.db" ".backup '$clean_db'" >/dev/null 2>&1 && [[ -f "$clean_db" ]]; then
+        db_snapshot="$clean_db"
+      fi
+      local db_uri="file:$db_snapshot?mode=ro"
       extracted_token="$(sqlite3 -readonly -noheader "$db_uri" "SELECT api_key FROM users WHERE role_id='admin' LIMIT 1;" 2>/dev/null | head -n1 || true)"
       local net_row
       net_row="$(sqlite3 -readonly -noheader -separator '|' "$db_uri" "SELECT json_extract(value,'\$.mode'), json_extract(value,'\$.host'), json_extract(value,'\$.ip'), json_extract(value,'\$.self_signed') FROM settings WHERE key='network';" 2>/dev/null | head -n1 || true)"
@@ -566,6 +622,8 @@ run_setup() {
       if [[ -n "$use_host" ]]; then
         extracted_base="${scheme}://${use_host}:${api_port_default}"
         echo "- Derived BASE_URL from database: $extracted_base"
+      else
+        echo "- BASE_URL not found in database; will prompt."
       fi
       if [[ -n "$extracted_token" ]]; then
         echo "- Extracted TOKEN from database: ${extracted_token:0:8}..."

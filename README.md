@@ -38,7 +38,7 @@ A `TOKEN` a StremHU adatbázisából (`users.api_key`, admin szerepkör) kerül 
    docker compose down
    ```
 
-   > A setup meg is kérdezi, hogy a StremHU már be van-e állítva, és ha nem, kilép a szükséges lépésekkel. Futó konténerek esetén emlékeztet a leállításra.
+   > A setup először megkérdezi, hogy a StremHU már be van-e állítva, és ha nem, kilép a szükséges lépésekkel. Ezután ellenőrzi, hogy fut-e a stack: ha igen, emlékeztet a leállításra, és **addig nem folytatja**, amíg a konténerek futnak (kilép, hogy ne készüljön inkonzisztens adatbázis-másolat).
 
 3. A StremHU `docker-compose.yml` mellett futtasd:
 
@@ -74,10 +74,10 @@ A `TOKEN` a StremHU adatbázisából (`users.api_key`, admin szerepkör) kerül 
 
 A helper mindkét esetet támogatja az adatbázis kiolvasásához:
 
-- **Bind mount** (pl. `./data:/app/data`): közvetlenül a fájlrendszerről olvas.
-- **Named volume** (az alapértelmezett, pl. `data:/app/data`): `docker cp`-vel a futó konténerből, vagy ha az nincs, egy ideiglenes `alpine` konténerrel olvassa ki az adatbázist.
+- **Bind mount** (pl. `./data:/app/data`): a `.../system/database` mappa tartalmát előbb egy ideiglenes könyvtárba másolja.
+- **Named volume** (az alapértelmezett, pl. `data:/app/data`): a valódi volume nevét a compose `volumes:` `name:` mezőjéből oldja fel (pl. `data` → `stremhu-source-data`); a tartalmat `docker cp`-vel a konténerből, vagy ha az nincs, egy ideiglenes `alpine` konténerrel másolja ki.
 
-Az adatbázis útvonala a konténeren belül `.../system/database/app.db`.
+Az adatbázis útvonala a konténeren belül `.../system/database/app.db`. Mivel a StremHU SQLite WAL módban fut, a helper a `app.db` mellett az `app.db-wal` (és `-shm`) fájlt is átmásolja, majd `sqlite3 ".backup"` segítségével konzisztens pillanatképet készít — enélkül a friss `TOKEN`/`BASE_URL` nem látszana. A forrás adatbázist nem módosítja.
 
 ## Automatikus port frissítés
 
