@@ -412,14 +412,13 @@ run_setup() {
   fi
 
   local existing_user="" existing_pass="" existing_local_network="" existing_token=""
-  local existing_loc="" existing_tz="" existing_selfsigned=""
+  local existing_loc="" existing_tz=""
   existing_user="$(grep -E '^PIA_USER=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
   existing_pass="$(grep -E '^PIA_PASS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
   existing_local_network="$(grep -E '^LOCAL_NETWORK=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
   existing_token="$(grep -E '^TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
   existing_loc="$(grep -E '^LOC=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
   existing_tz="$(grep -E '^TZ=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
-  existing_selfsigned="$(grep -E '^SELFSIGNED=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
 
   local pia_user="" pia_pass=""
 
@@ -644,7 +643,7 @@ run_setup() {
   local api_port_default="${api_port:-7070}"
   echo "- API port (from compose, default 7070): $api_port_default"
 
-  local extracted_token="" extracted_base="" selfsigned="${existing_selfsigned:-false}"
+  local extracted_token="" extracted_base=""
   local db_dir=""
   if [[ -n "$db_volume_source" && -n "$db_subpath" ]]; then
     db_dir="$(copy_database "$compose_file" "$service_name" "$db_volume_mode" "$db_volume_source" "$db_subpath" || true)"
@@ -664,16 +663,9 @@ run_setup() {
       local db_uri="file:$db_snapshot?mode=ro"
       extracted_token="$(sqlite3 -readonly -noheader "$db_uri" "SELECT api_key FROM users WHERE role_id='admin' LIMIT 1;" 2>/dev/null | head -n1 || true)"
       local net_row
-      net_row="$(sqlite3 -readonly -noheader -separator '|' "$db_uri" "SELECT json_extract(value,'\$.mode'), json_extract(value,'\$.host'), json_extract(value,'\$.ip'), json_extract(value,'\$.self_signed') FROM settings WHERE key='network';" 2>/dev/null | head -n1 || true)"
-      local net_mode net_host net_ip net_ss
-      IFS='|' read -r net_mode net_host net_ip net_ss <<< "$net_row"
-      if [[ -n "$net_row" ]]; then
-        if [[ "$net_ss" == "1" || "$net_ss" == "true" ]]; then
-          selfsigned="true"
-        else
-          selfsigned="false"
-        fi
-      fi
+      net_row="$(sqlite3 -readonly -noheader -separator '|' "$db_uri" "SELECT json_extract(value,'\$.mode'), json_extract(value,'\$.host'), json_extract(value,'\$.ip') FROM settings WHERE key='network';" 2>/dev/null | head -n1 || true)"
+      local net_mode net_host net_ip
+      IFS='|' read -r net_mode net_host net_ip <<< "$net_row"
       local scheme="https"
       [[ "$net_mode" == "manual" ]] && scheme="http"
       local use_host="${net_host:-$net_ip}"
@@ -768,7 +760,6 @@ run_setup() {
     printf "BASE_URL=%s\n" "$BASE_URL"
     printf "LOC=%s\n" "$loc"
     printf "TZ=%s\n" "$tz"
-    printf "SELFSIGNED=%s\n" "$selfsigned"
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE" 2>/dev/null || true
   echo ".env updated."
@@ -922,15 +913,12 @@ fi
 
 token_env=""
 base_env=""
-selfsigned_env="false"
 if [[ -f "$ENV_PATH" ]]; then
   token_env="$(grep -E '^TOKEN=' "$ENV_PATH" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
   base_env="$(grep -E '^BASE_URL=' "$ENV_PATH" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
-  selfsigned_env="$(grep -E '^SELFSIGNED=' "$ENV_PATH" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
 fi
 if [[ -z "$token_env" && -n "${TOKEN-}" ]]; then token_env="$TOKEN"; fi
 if [[ -z "$base_env" && -n "${BASE_URL-}" ]]; then base_env="$BASE_URL"; fi
-[[ -z "$selfsigned_env" ]] && selfsigned_env="false"
 
 case "${1-}" in
   setup)
@@ -962,32 +950,39 @@ TOKEN="$token_env"
 BASE_URL="$base_env"
 PORT="${1}"
 
-SETTINGS_URL="${BASE_URL}/api/${TOKEN}/relay/settings"
+# pia-helper always runs inside the vpn-pia container, which shares StremHU's
+# network namespace. The API is therefore reachable directly on loopback, so we
+# only take the port from BASE_URL and talk to 127.0.0.1 (avoiding a NAT
+# hairpin through the host). StremHU is always TLS, and the traffic never leaves
+# the namespace, so -k is safe here.
+API_HOSTPORT="${BASE_URL#*://}"
+API_HOSTPORT="${API_HOSTPORT%%/*}"
+API_PORT="${API_HOSTPORT##*:}"
+[[ "$API_PORT" =~ ^[0-9]+$ ]] || API_PORT="7070"
 
-if [[ "$selfsigned_env" == "true" || "$selfsigned_env" == "1" ]]; then
-  CURL_INSECURE=(-k)
-else
-  CURL_INSECURE=()
-fi
+SETTINGS_URL="https://127.0.0.1:${API_PORT}/api/${TOKEN}/relay/settings"
 
-echo "PIA-VPN Port update: notifying ${BASE_URL} with port ${PORT}"
+echo "PIA-VPN Port update: notifying ${BASE_URL} (via 127.0.0.1:${API_PORT}) with port ${PORT}"
 
-if ! curl \
+status=0
+curl \
   --fail \
   --silent \
   --show-error \
-  ${CURL_INSECURE[@]+"${CURL_INSECURE[@]}"} \
+  --insecure \
+  --output /dev/null \
+  --connect-timeout 10 \
   --max-time 60 \
-  --retry 5 \
-  --retry-delay 30 \
+  --retry 10 \
+  --retry-delay 15 \
+  --retry-connrefused \
   -X PUT \
   -H "Content-Type: application/json" \
   -d "{\"port\": ${PORT}}" \
-  "${SETTINGS_URL}"
-then
-  status=$?
-  echo "PIA-VPN Port update failed (curl exit ${status}) hitting ${SETTINGS_URL}. If the container just started, this can be normal while PIA settles." >&2
+  "${SETTINGS_URL}" || status=$?
+
+if (( status != 0 )); then
+  echo "PIA-VPN Port update failed (curl exit ${status}) hitting ${SETTINGS_URL}. If the container just started, this can be normal while StremHU boots." >&2
   exit 1
-else
-  echo "PIA-VPN Port update success (curl, pia-helper.sh)"
 fi
+echo "PIA-VPN Port update success (curl, pia-helper.sh)"

@@ -107,10 +107,9 @@ TOKEN=api-token-ide
 BASE_URL=https://10-88-1-25.local-ip.medicmobile.org:7070
 LOC=hungary
 TZ=Europe/Budapest
-SELFSIGNED=false
 ```
 
-- `SELFSIGNED=true` esetén a helper a `curl -k` kapcsolót használja (önmagában aláírt tanúsítvány).
+- A helper a `vpn-pia` konténeren belül fut, amely a StremHU-val azonos hálózati névtérben van, ezért az API-t **közvetlenül a `127.0.0.1:<port>` címen** éri el (a `BASE_URL`-ből csak a portot használja). Így nem kell a host felé NAT hairpinnel mennie. Mivel a StremHU mindig TLS-t használ, és a forgalom nem hagyja el a névteret, a curl `-k` kapcsolóval hív.
 - Ha a `BASE_URL` nem oldható fel az adatbázisból, a setup bekéri; később újrafuttatható.
 
 ## Tippek / hibakeresés
