@@ -1,11 +1,9 @@
 .env
-.env.bak-*
 compose.pia.yml
 docker-compose.override.yml
 compose.override.yml
 pia-compose/
 data/
 config/
-app.db
 *.db
 *.bak-*

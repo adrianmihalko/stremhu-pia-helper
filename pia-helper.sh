@@ -170,23 +170,6 @@ detect_volume_mappings() {
   ' <<< "$block"
 }
 
-# Given a "source|target" mapping, resolve DB location: <mode>|<source_or_path>|<subpath>
-resolve_db_location() {
-  local source="$1" target="$2"
-  local subpath=""
-  case "$target" in
-    /app/data/system) subpath="database/app.db" ;;
-    /app/data) subpath="system/database/app.db" ;;
-    *) return 1 ;;
-  esac
-  [[ -z "$source" ]] && return 1
-  local mode="volume"
-  case "$source" in
-    /*|./*|../*) mode="bind" ;;
-  esac
-  printf '%s|%s|%s\n' "$mode" "$source" "$subpath"
-}
-
 # Resolve the real Docker volume name from the compose top-level volumes block.
 # Falls back to <project>_<key> (Compose's default naming) if no explicit name is set.
 resolve_volume_name() {
@@ -520,7 +503,7 @@ run_setup() {
       default_local_network_value="172.18.0.0/16"
     fi
     local local_network_input
-    read -e -p "LOCAL_NETWORK=" -i "$default_local_network_value" local_network_input
+    read -e -r -p "LOCAL_NETWORK=" -i "$default_local_network_value" local_network_input
     local_network_input="${local_network_input#LOCAL_NETWORK=}"
     add_local_network_subnet "$local_network_input"
 
