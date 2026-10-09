@@ -170,6 +170,29 @@ detect_volume_mappings() {
   ' <<< "$block"
 }
 
+# Print the Compose project name: top-level `name:`, else COMPOSE_PROJECT_NAME,
+# else the normalized compose directory basename.
+compose_project_name() {
+  local compose_file="$1"
+  [[ -z "$compose_file" ]] && return 1
+  local name
+  name="$(awk '
+    /^name:[[:space:]]*/ {
+      l=$0; sub(/.*name:[[:space:]]*/,"",l); gsub(/["'"'"']/,"",l); sub(/[[:space:]]*#.*/,"",l)
+      if (l!="") { print l; exit }
+    }
+    /^services:[[:space:]]*$/ { exit }
+  ' "$compose_file")"
+  if [[ -z "$name" && -n "${COMPOSE_PROJECT_NAME-}" ]]; then
+    name="$COMPOSE_PROJECT_NAME"
+  fi
+  if [[ -z "$name" ]]; then
+    name="$(basename "$(cd "$(dirname "$compose_file")" && pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g; s/^[-_]*//; s/[-_]*$//')"
+  fi
+  [[ -z "$name" ]] && return 1
+  printf '%s\n' "$name"
+}
+
 # Resolve the real Docker volume name from the compose top-level volumes block.
 # Falls back to <project>_<key> (Compose's default naming) if no explicit name is set.
 resolve_volume_name() {
@@ -191,7 +214,7 @@ resolve_volume_name() {
     return 0
   fi
   local project
-  project="$(basename "$(cd "$(dirname "$compose_file")" && pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g; s/^[-_]*//; s/[-_]*$//')"
+  project="$(compose_project_name "$compose_file" || true)"
   [[ -z "$project" ]] && return 1
   printf '%s\n' "${project}_${key}"
 }
@@ -237,7 +260,7 @@ copy_database() {
   command -v docker >/dev/null 2>&1 || return 1
 
   local container_id=""
-  container_id="$(docker compose -f "$compose_file" ps -q "$service" 2>/dev/null | head -n1 || true)"
+  container_id="$(docker compose -f "$compose_file" ps -aq "$service" 2>/dev/null | head -n1 || true)"
   if [[ -z "$container_id" ]]; then
     container_id="$(docker ps -aq -f "name=^/${service}$" 2>/dev/null | head -n1 || true)"
   fi
@@ -351,7 +374,7 @@ run_setup() {
     echo "Please do the following first:"
     echo "  1) docker compose up -d"
     echo "  2) Finish the StremHU web setup (admin user, network, torrent port)"
-    echo "  3) docker compose down"
+    echo "  3) docker compose stop"
     echo "  4) Run './pia-helper.sh setup' again"
     exit 1
   fi
@@ -372,12 +395,13 @@ run_setup() {
 
   if stacks_running; then
     echo
-    echo "The StremHU stack is currently running. Stop it before continuing, because"
-    echo "the container network mode and published ports will change:"
+    echo "The StremHU stack is currently running. Stop it (do not remove it) before"
+    echo "continuing, because the container network mode and published ports will change,"
+    echo "and the database/network need to stay readable:"
     if [[ -n "$compose_file" ]]; then
-      echo "  docker compose -f \"$compose_file\" down"
+      echo "  docker compose -f \"$compose_file\" stop"
     else
-      echo "  docker compose down"
+      echo "  docker compose stop"
     fi
     read -r -p "Press Enter once the containers are stopped... " _
     if stacks_running; then
@@ -445,17 +469,67 @@ run_setup() {
     return 1
   }
 
+  # Print the unique Docker subnets reachable by the StremHU/VPN containers.
   detect_docker_subnet() {
     command -v docker >/dev/null 2>&1 || return 1
-    local network_id cidr
-    network_id="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' vpn-pia 2>/dev/null | tr -d '\n' || true)"
-    if [[ -z "$network_id" ]]; then
-      network_id="$(docker compose ps -q vpn-pia 2>/dev/null | xargs -r docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' 2>/dev/null | head -n1 | tr -d '\n' || true)"
+    local seen=" " out=""
+
+    emit_subnet() {
+      local cidr="$1"
+      [[ "$cidr" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || return 0
+      [[ "$seen" == *" $cidr "* ]] && return 0
+      seen="$seen$cidr "
+      out="$out$cidr"$'\n'
+    }
+
+    emit_from_container() {
+      local container_id="$1"
+      [[ -z "$container_id" ]] && return 0
+      local ids_str
+      ids_str="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}' "$container_id" 2>/dev/null || true)"
+      local -a ids
+      read -r -a ids <<< "$ids_str"
+      [[ ${#ids[@]} -eq 0 ]] && return 0
+      local cid subnet
+      for cid in "${ids[@]}"; do
+        [[ -z "$cid" ]] && continue
+        subnet="$(docker network inspect "$cid" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null | head -n1 || true)"
+        emit_subnet "$subnet"
+      done
+    }
+
+    find_container() {
+      local name="$1" cid=""
+      if [[ -n "$compose_file" ]]; then
+        cid="$(docker compose -f "$compose_file" ps -aq "$name" 2>/dev/null | head -n1 || true)"
+      fi
+      [[ -z "$cid" ]] && cid="$(docker ps -aq -f "name=^/${name}$" 2>/dev/null | head -n1 || true)"
+      printf '%s\n' "$cid"
+    }
+
+    local svc_hint="stremhu-source"
+    if [[ -n "$compose_file" ]]; then
+      svc_hint="$(detect_compose_service "$compose_file" || true)"
+      [[ -z "$svc_hint" ]] && svc_hint="stremhu-source"
     fi
-    [[ -z "$network_id" ]] && return 1
-    cidr="$(docker network inspect "$network_id" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null | head -n1 || true)"
-    [[ "$cidr" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || return 1
-    printf '%s\n' "$cidr"
+    emit_from_container "$(find_container "$svc_hint")"
+    emit_from_container "$(find_container "vpn-pia")"
+
+    if [[ -n "$compose_file" ]]; then
+      local project project_subnet
+      project="$(compose_project_name "$compose_file" || true)"
+      if [[ -n "$project" ]]; then
+        project_subnet="$(docker network inspect "${project}_default" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null | head -n1 || true)"
+        emit_subnet "$project_subnet"
+      fi
+    fi
+
+    local bridge_subnet
+    bridge_subnet="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null | head -n1 || true)"
+    emit_subnet "$bridge_subnet"
+
+    [[ -z "$out" ]] && return 1
+    printf '%s' "$out"
   }
 
   detect_local_subnet() {
@@ -480,14 +554,15 @@ run_setup() {
   if [[ "$use_existing_local_network" == true ]]; then
     local_network_value="$existing_local_network"
   else
-    local docker_subnet local_subnet
-    docker_subnet="$(detect_docker_subnet || true)"
-    if [[ -n "$docker_subnet" ]]; then
-      echo "- Detected Docker subnet: $docker_subnet"
-      add_local_network_subnet "$docker_subnet"
-    else
-      echo "- Docker subnet not detected automatically."
-    fi
+    local docker_found=false sn local_subnet
+    while IFS= read -r sn; do
+      [[ -z "$sn" ]] && continue
+      docker_found=true
+      echo "- Detected Docker subnet: $sn"
+      add_local_network_subnet "$sn"
+    done < <(detect_docker_subnet || true)
+    [[ "$docker_found" == false ]] && echo "- Docker subnet not detected automatically."
+
     local_subnet="$(detect_local_subnet || true)"
     if [[ -n "$local_subnet" ]]; then
       echo "- Detected local subnet: $local_subnet"

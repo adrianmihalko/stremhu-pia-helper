@@ -32,10 +32,10 @@ A `TOKEN` a StremHU adatbázisából (`users.api_key`, admin szerepkör) kerül 
    chmod +x pia-helper.sh
    ```
 
-2. Győződj meg róla, hogy a StremHU Source **már be van üzemelve és konfigurálva** (van admin felhasználó és hálózat), és **állítsd le a stacket**, mert a konténer hálózati módja és a publikált portok meg fognak változni:
+2. Győződj meg róla, hogy a StremHU Source **már be van üzemelve és konfigurálva** (van admin felhasználó és hálózat), és **állítsd le a stacket** (`stop`, ne `down` - így a konténerek és a hálózat megmaradnak az adatbázis és a subnet detektálásához), mert a konténer hálózati módja és a publikált portok meg fognak változni:
 
    ```bash
-   docker compose down
+   docker compose stop
    ```
 
    > A setup először megkérdezi, hogy a StremHU már be van-e állítva, és ha nem, kilép a szükséges lépésekkel. Ezután ellenőrzi, hogy fut-e a stack: ha igen, emlékeztet a leállításra, és **addig nem folytatja**, amíg a konténerek futnak (kilép, hogy ne készüljön inkonzisztens adatbázis-másolat).
@@ -48,7 +48,7 @@ A `TOKEN` a StremHU adatbázisából (`users.api_key`, admin szerepkör) kerül 
 
    A setup interaktívan bekérdezi:
    - `PIA_USER`, `PIA_PASS` (jelszó bekérésnél nem látszik),
-   - `LOCAL_NETWORK`: automatikusan detektálja a Docker subnetet, a helyi LAN subnetet, és opcionálisan a Tailscale subnetet (`100.64.0.0/10`). **Fontos**, hogy a csatlakozott VPN-hez elérhető legyenek a konténerek.
+   - `LOCAL_NETWORK`: automatikusan detektálja a Docker subneteket (a StremHU/VPN konténerek hálózataiból, a compose projekt hálózatából és a Docker `bridge`-ből), a helyi LAN subnetet, és opcionálisan a Tailscale subnetet (`100.64.0.0/10`). **Fontos**, hogy a csatlakozott VPN-hez elérhető legyenek a konténerek.
    - `LOC` (PIA ország, alap: `hungary`), `TZ` (alap: `Europe/Budapest`).
 
    Emellett megkeresi a StremHU szolgáltatást és annak publikált webes portját (alap: `7070`), valamint kiolvassa az adatbázisból a `TOKEN`-t és a `BASE_URL`-t.
